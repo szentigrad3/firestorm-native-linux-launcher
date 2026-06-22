@@ -38,7 +38,7 @@ The AppImage bundles its own WebKitGTK (for the sign-in window), so you only nee
 
 ## Addons
 
-Browsing the full CurseForge catalog needs a free CurseForge API key. Create one at the [CurseForge console](https://console.curseforge.com/) and paste it into **Settings → Addons**. Without a key, the launcher falls back to a smaller built-in list.
+Browse and install addons from the full CurseForge catalog — no setup or API key needed; it works out of the box. (Optional: power users can set their own free [CurseForge API key](https://console.curseforge.com/) in **Settings → Addons** to use their own request quota.)
 
 ## Notes
 
