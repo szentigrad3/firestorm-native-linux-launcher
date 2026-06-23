@@ -1,0 +1,33 @@
+[package]
+name = "firestorm-native-linux-launcher"
+version = "1.0.1"
+edition = "2021"
+license = "MIT"
+# `cargo run` / `cargo run --release` launches the GUI (not the login helper).
+default-run = "firestorm-native-linux-launcher"
+
+# The WebKitGTK login helper lives in its own crate so that wry/webkit2gtk
+# linkage is never forced onto the egui launcher binary.
+[workspace]
+members = ["login-webview"]
+# Build BOTH the launcher and the login helper on a plain `cargo build`.
+# (Without this, a package-root workspace only builds the root package.)
+default-members = [".", "login-webview"]
+resolver = "2"
+
+[dependencies]
+eframe = "0.34.0"
+egui = "0.34.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+dirs = "6.0"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# Native replacements for the former Python tools (live API, installer, addon ZIP).
+# ureq bundles its own TLS (rustls + webpki roots) so HTTPS needs no host libs —
+# important inside the AppImage, where a spawned python3 inherited our bundled
+# LD_LIBRARY_PATH and broke. Matches the version login-webview already builds with.
+ureq = "2.10"
+sha2 = "0.10"
+# Only the pure-Rust DEFLATE backend — avoids bzip2/zstd/aes system C deps so the
+# build stays self-contained. WoW addon/data ZIPs are standard deflate.
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
