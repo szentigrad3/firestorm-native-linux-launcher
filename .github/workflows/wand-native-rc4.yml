@@ -29,6 +29,8 @@ jobs:
           cd wine
           git checkout 46b29104e3741fe23bf5e2547196a253aab88c89
           autoreconf -fiv
+          (cd dlls/winevulkan && ./make_vulkan)
+          test -s include/wine/vulkan.h
           test -x configure
           git rev-parse HEAD
 
