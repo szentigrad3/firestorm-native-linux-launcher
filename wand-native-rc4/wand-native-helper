@@ -415,9 +415,12 @@ list_games() {
       appid="$(sed -nE 's/^[[:space:]]*"appid"[[:space:]]+"([0-9]+)".*/\\1/p' "$mf" | head -1)"
       name="$(sed -nE 's/^[[:space:]]*"name"[[:space:]]+"([^"]+)".*/\\1/p' "$mf" | head -1)"
       [[ "$appid" =~ ^[0-9]+$ && -n "$name" ]] || continue
-      printf '%s\\t%s\\n' "$appid" "$name"
+      printf '%s\t%s\n' "$appid" "$name"
     done
-  done < <(steam_roots) | awk -F '\\t' '!seen[$1]++' | sort -t 
+  done < <(steam_roots) | awk -F '\t' '!seen[$1]++' | sort -t "$(printf '\t')" -k2,2f
+}
+
+case "${1:-}" in
   games) list_games ;;
   setup) shift; install_tool "${1:-}" ;;
   verify) shift; verify_tool "${1:-}" ;;
@@ -425,19 +428,6 @@ list_games() {
   health) shift; trainer_health "${1:-}" ;;
   *)
     echo "Usage: wand-native-helper {games|setup|verify|play|health} [APPID]" >&2
-    exit 2
-    ;;
-esac
-\\t' -k2,2f
-}
-
-case "${1:-}" in
-  setup) shift; install_tool "${1:-}" ;;
-  verify) shift; verify_tool "${1:-}" ;;
-  play) shift; play_with_wand "${1:-}" ;;
-  health) shift; trainer_health "${1:-}" ;;
-  *)
-    echo "Usage: wand-native-helper {setup|verify|play|health} APPID" >&2
     exit 2
     ;;
 esac
