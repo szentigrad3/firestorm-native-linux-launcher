@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+SELF_DIR="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+REAL="$SELF_DIR/proton.wand-real"
+LOG_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/wand"
+LOG="$LOG_DIR/steam-wrapper.log"
+mkdir -p "$LOG_DIR"
+
+log() {
+  printf '[%s] %s\n' "$(date -Is)" "$*" >> "$LOG"
+}
+
+fallback() {
+  log "fallback: $*"
+  exec "$REAL" "$@"
+}
+
+[[ -x "$REAL" ]] || { echo "Wand Native: missing $REAL" >&2; exit 127; }
+
+if [[ "${WAND_STEAM_WRAP_DISABLE:-0}" == "1" ]]; then
+  exec "$REAL" "$@"
+fi
+
+# Preserve every Proton command except the game's normal run path.
+verb="${1:-}"
+case "$verb" in
+  waitforexitandrun|run) ;;
+  *) exec "$REAL" "$@" ;;
+esac
+
+[[ $# -ge 2 ]] || exec "$REAL" "$@"
+game="$2"
+shift 2
+game_args=("$@")
+
+appid="${SteamAppId:-${SteamGameId:-${STEAM_COMPAT_APP_ID:-}}}"
+compat="${STEAM_COMPAT_DATA_PATH:-}"
+[[ "$appid" =~ ^[0-9]+$ ]] || exec "$REAL" "$verb" "$game" "${game_args[@]}"
+[[ -n "$compat" && -d "$compat/pfx/drive_c" ]] || exec "$REAL" "$verb" "$game" "${game_args[@]}"
+
+# Prevent recursion when this wrapper dispatches the generated batch.
+if [[ "${WAND_NATIVE_BATCH_ACTIVE:-0}" == "1" ]]; then
+  exec "$REAL" "$verb" "$game" "${game_args[@]}"
+fi
+
+# Find the newest installed Wand in this exact game prefix.
+wand_linux="$(
+  find "$compat/pfx/drive_c/users" -type f \
+    -path '*/AppData/Local/Wand/app-*/Wand.exe' -print 2>/dev/null |
+    sort -V | tail -1
+)"
+if [[ -z "$wand_linux" ]]; then
+  # Old installs may still be named WeMod.
+  wand_linux="$(
+    find "$compat/pfx/drive_c/users" -type f \
+      \( -path '*/AppData/Local/WeMod/app-*/WeMod.exe' -o -path '*/AppData/Local/WeMod/app-*/Wand.exe' \) \
+      -print 2>/dev/null | sort -V | tail -1
+  )"
+fi
+[[ -n "$wand_linux" && -f "$wand_linux" ]] || exec "$REAL" "$verb" "$game" "${game_args[@]}"
+
+to_win() {
+  local p="$1"
+  case "$p" in
+    "$compat/pfx/drive_c/"*)
+      p="${p#"$compat/pfx/drive_c/"}"
+      printf 'C:\\%s' "${p//\//\\}"
+      ;;
+    /*)
+      printf 'Z:\\%s' "${p#/}" | sed 's#/#\\#g'
+      ;;
+    *)
+      printf '%s' "$p"
+      ;;
+  esac
+}
+
+escape_batch_arg() {
+  local s="$1"
+  s="${s//%/%%}"
+  s="${s//^/^^}"
+  s="${s//&/^&}"
+  s="${s//|/^|}"
+  s="${s//</^<}"
+  s="${s//>/^>}"
+  printf '"%s"' "${s//\"/\\\"}"
+}
+
+wand_win="$(to_win "$wand_linux")"
+game_win="$(to_win "$game")"
+batch_linux="$LOG_DIR/appid-$appid-launch.bat"
+batch_win="$(to_win "$batch_linux")"
+
+{
+  printf '@echo off\r\n'
+  printf '@title Wand Native - %s\r\n' "$appid"
+  printf 'set "SteamAppId=%s"\r\n' "$appid"
+  printf 'set "SteamGameId=%s"\r\n' "$appid"
+  printf 'set "STEAM_COMPAT_APP_ID=%s"\r\n' "$appid"
+  printf 'start "" "%s"\r\n' "$wand_win"
+  printf 'for /L %%%%I in (1,1,30) do (\r\n'
+  printf '  tasklist /FI "IMAGENAME eq Wand.exe" 2^>nul | find /I "Wand.exe" ^>nul && goto :wand_ready\r\n'
+  printf '  tasklist /FI "IMAGENAME eq WeMod.exe" 2^>nul | find /I "WeMod.exe" ^>nul && goto :wand_ready\r\n'
+  printf '  ping 127.0.0.1 -n 2 ^>nul\r\n'
+  printf ')\r\n'
+  printf ':wand_ready\r\n'
+  printf 'start "" /wait "%s"' "$game_win"
+  for arg in "${game_args[@]}"; do
+    printf ' '
+    escape_batch_arg "$arg"
+  done
+  printf '\r\n'
+  printf 'exit /b %%ERRORLEVEL%%\r\n'
+} > "$batch_linux"
+
+log "appid=$appid verb=$verb game=$game wand=$wand_linux batch=$batch_linux"
+export WAND_NATIVE_BATCH_ACTIVE=1
+exec "$REAL" waitforexitandrun "$batch_win"
