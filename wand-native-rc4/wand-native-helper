@@ -123,7 +123,13 @@ ensure_wand() {
   local installer="$CACHE/Wand-Setup.exe"
   note "Wand is not installed in this game's Proton prefix."
   note "Downloading the official Wand installer..."
-  curl -fL --retry 3 -o "$installer" "https://wand.com/download"
+  rm -f "$installer"
+  if ! curl -fL --retry 3 -o "$installer" "https://wand.com/download" ||
+     [[ "$(head -c2 "$installer" 2>/dev/null || true)" != "MZ" ]]; then
+    note "Primary Wand download did not return the installer; trying the official direct endpoint..."
+    rm -f "$installer"
+    curl -fL --retry 3 -o "$installer" "https://www.wemod.com/download/direct"
+  fi
   [[ "$(head -c2 "$installer" 2>/dev/null || true)" == "MZ" ]] || die "Official Wand download did not return a Windows installer."
 
   note "Installing Wand automatically into AppID $appid..."
