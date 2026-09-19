@@ -412,8 +412,8 @@ list_games() {
   while IFS= read -r root; do
     for mf in "$root"/steamapps/appmanifest_*.acf; do
       [[ -f "$mf" ]] || continue
-      appid="$(sed -nE 's/^[[:space:]]*"appid"[[:space:]]+"([0-9]+)".*/\\1/p' "$mf" | head -1)"
-      name="$(sed -nE 's/^[[:space:]]*"name"[[:space:]]+"([^"]+)".*/\\1/p' "$mf" | head -1)"
+      appid="$(sed -nE 's/^[[:space:]]*"appid"[[:space:]]+"([0-9]+)".*/\1/p' "$mf" | head -1)"
+      name="$(sed -nE 's/^[[:space:]]*"name"[[:space:]]+"([^"]+)".*/\1/p' "$mf" | head -1)"
       [[ "$appid" =~ ^[0-9]+$ && -n "$name" ]] || continue
       printf '%s\t%s\n' "$appid" "$name"
     done
