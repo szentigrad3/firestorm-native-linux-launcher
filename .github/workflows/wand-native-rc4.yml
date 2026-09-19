@@ -21,7 +21,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential gcc-multilib g++-multilib mingw-w64 flex bison \
             python3 git pkg-config libfreetype-dev libfreetype-dev:i386 \
-            libunwind-dev libx11-dev libx11-dev:i386
+            libunwind-dev libx11-dev libx11-dev:i386 libgtk-4-dev \
+            desktop-file-utils curl file xvfb
 
       - name: Fetch exact GE-Proton11-7 Wine source
         run: |
@@ -111,4 +112,114 @@ jobs:
         with:
           name: wand-crypt32-payload
           path: payload/
+          if-no-files-found: error
+
+      - name: Build native Wand Native GUI
+        run: |
+          set -euxo pipefail
+          gcc -O2 -Wall -Wextra -o wand-native-rc4/wand-native \
+            wand-native-rc4/gui.c $(pkg-config --cflags --libs gtk4)
+          chmod +x wand-native-rc4/wand-native-helper wand-native-rc4/proton-wrapper
+          bash -n wand-native-rc4/wand-native-helper
+          bash -n wand-native-rc4/proton-wrapper
+          file wand-native-rc4/wand-native
+
+      - name: Stage AppDir
+        run: |
+          set -euxo pipefail
+          APPDIR="$GITHUB_WORKSPACE/WandNative.AppDir"
+          rm -rf "$APPDIR"
+          mkdir -p \
+            "$APPDIR/usr/bin" \
+            "$APPDIR/usr/lib/wand-native/payload/x86_64-windows" \
+            "$APPDIR/usr/lib/wand-native/payload/i386-windows" \
+            "$APPDIR/usr/share/applications" \
+            "$APPDIR/usr/share/icons/hicolor/scalable/apps" \
+            "$APPDIR/usr/share/licenses/wand-native"
+
+          cp wand-native-rc4/wand-native "$APPDIR/usr/bin/wand-native"
+          cp wand-native-rc4/wand-native-helper "$APPDIR/usr/lib/wand-native/wand-native-helper"
+          cp wand-native-rc4/proton-wrapper "$APPDIR/usr/lib/wand-native/proton-wrapper"
+          cp payload/x86_64-windows/crypt32.dll "$APPDIR/usr/lib/wand-native/payload/x86_64-windows/crypt32.dll"
+          cp payload/i386-windows/crypt32.dll "$APPDIR/usr/lib/wand-native/payload/i386-windows/crypt32.dll"
+          cp payload/SHA256SUMS "$APPDIR/usr/lib/wand-native/payload/SHA256SUMS"
+          cp wine/COPYING.LIB "$APPDIR/usr/share/licenses/wand-native/WINE-LGPL-2.1.txt"
+
+          cat > "$APPDIR/AppRun" <<'EOF'
+          #!/usr/bin/env bash
+          set -Eeuo pipefail
+          HERE="$(cd -- "$(dirname -- "$0")" && pwd -P)"
+          export WAND_APPDIR="$HERE"
+          export PATH="$HERE/usr/bin:$PATH"
+          exec "$HERE/usr/bin/wand-native" "$@"
+          EOF
+          chmod 0755 "$APPDIR/AppRun" "$APPDIR/usr/bin/wand-native" \
+            "$APPDIR/usr/lib/wand-native/wand-native-helper" \
+            "$APPDIR/usr/lib/wand-native/proton-wrapper"
+
+          cat > "$APPDIR/dev.wand.WandNative.desktop" <<'EOF'
+          [Desktop Entry]
+          Type=Application
+          Name=Wand Native
+          Comment=Launch Wand and Steam games together through Proton
+          Exec=wand-native
+          Icon=wand-native
+          Categories=Game;Utility;
+          Terminal=false
+          StartupNotify=true
+          EOF
+          cp "$APPDIR/dev.wand.WandNative.desktop" "$APPDIR/usr/share/applications/dev.wand.WandNative.desktop"
+
+          cat > "$APPDIR/wand-native.svg" <<'EOF'
+          <svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+            <rect width="256" height="256" rx="56" fill="#171a1f"/>
+            <path d="M55 70l35 125 38-82 38 82 35-125h-30l-18 70-31-69-31 69-18-70z" fill="#ffffff"/>
+          </svg>
+          EOF
+          cp "$APPDIR/wand-native.svg" "$APPDIR/usr/share/icons/hicolor/scalable/apps/wand-native.svg"
+          desktop-file-validate "$APPDIR/dev.wand.WandNative.desktop"
+
+      - name: Build AppImage
+        run: |
+          set -euxo pipefail
+          TOOL="$RUNNER_TEMP/appimagetool-x86_64.AppImage"
+          curl -fL --retry 3 -o "$TOOL" \
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  $TOOL" | sha256sum -c -
+          chmod +x "$TOOL"
+          mkdir -p dist
+          ARCH=x86_64 APPIMAGE_EXTRACT_AND_RUN=1 "$TOOL" WandNative.AppDir
+          built="$(find . -maxdepth 2 -type f -name 'Wand_Native*.AppImage' -o -name 'Wand-Native*.AppImage' | head -1)"
+          if [[ -z "$built" ]]; then
+            built="$(find . -maxdepth 2 -type f -name '*.AppImage' ! -path "$TOOL" | head -1)"
+          fi
+          test -n "$built"
+          mv "$built" dist/Wand-Native-0.1.41-native-gui-rc4-x86_64.AppImage
+          chmod +x dist/Wand-Native-0.1.41-native-gui-rc4-x86_64.AppImage
+          sha256sum dist/Wand-Native-0.1.41-native-gui-rc4-x86_64.AppImage > \
+            dist/Wand-Native-0.1.41-native-gui-rc4-x86_64.AppImage.sha256
+
+      - name: Validate packaged AppImage
+        run: |
+          set -euxo pipefail
+          IMAGE=dist/Wand-Native-0.1.41-native-gui-rc4-x86_64.AppImage
+          rm -rf squashfs-root
+          "$IMAGE" --appimage-extract >/dev/null
+          test -x squashfs-root/AppRun
+          test -x squashfs-root/usr/bin/wand-native
+          test -x squashfs-root/usr/lib/wand-native/wand-native-helper
+          test -x squashfs-root/usr/lib/wand-native/proton-wrapper
+          test -s squashfs-root/usr/lib/wand-native/payload/x86_64-windows/crypt32.dll
+          test -s squashfs-root/usr/lib/wand-native/payload/i386-windows/crypt32.dll
+          grep -q WAND_NATIVE_BATCH_ACTIVE squashfs-root/usr/lib/wand-native/proton-wrapper
+          timeout 5s xvfb-run -a env WAND_APPDIR="$PWD/squashfs-root" \
+            squashfs-root/usr/bin/wand-native || rc=$?
+          test "${rc:-124}" = "124"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Wand-Native-0.1.41-native-gui-rc4-x86_64
+          path: |
+            dist/Wand-Native-0.1.41-native-gui-rc4-x86_64.AppImage
+            dist/Wand-Native-0.1.41-native-gui-rc4-x86_64.AppImage.sha256
           if-no-files-found: error
