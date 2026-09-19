@@ -30,7 +30,11 @@ jobs:
           git checkout 46b29104e3741fe23bf5e2547196a253aab88c89
           autoreconf -fiv
           (cd dlls/winevulkan && ./make_vulkan)
+          ./tools/make_requests
+          ./tools/make_specfiles
           test -s include/wine/vulkan.h
+          test -s dlls/ntdll/ntsyscalls.h
+          test -s include/wine/server_protocol.h
           test -x configure
           git rev-parse HEAD
 
