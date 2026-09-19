@@ -284,17 +284,13 @@ jobs:
           HELPER="$WAND_APPDIR/usr/lib/wand-native/wand-native-helper"
 
           "$HELPER" games | tee "$FAKE/games.txt"
-          grep -q 
-          path: |
-            dist/Wand-Native-0.1.41-native-gui-rc4-x86_64.AppImage
-            dist/Wand-Native-0.1.41-native-gui-rc4-x86_64.AppImage.sha256
-          if-no-files-found: error
-2713000\tResonance: A Plague Tale Legacy' "$FAKE/games.txt"
+          grep -Fq "2713000" "$FAKE/games.txt"
+          grep -Fq "Resonance: A Plague Tale Legacy" "$FAKE/games.txt"
 
           "$HELPER" setup 2713000 | tee "$FAKE/setup.txt"
-          grep -q 'SETUP COMPLETE' "$FAKE/setup.txt"
+          grep -q "SETUP COMPLETE" "$FAKE/setup.txt"
           "$HELPER" verify 2713000 | tee "$FAKE/verify.txt"
-          grep -q 'VERIFY COMPLETE' "$FAKE/verify.txt"
+          grep -q "VERIFY COMPLETE" "$FAKE/verify.txt"
 
           TOOL="$STEAM/compatibilitytools.d/GE-Proton-Wand-SHA256"
           test -x "$TOOL/proton"
@@ -311,13 +307,13 @@ jobs:
           SteamAppId=2713000 SteamGameId=2713000 STEAM_COMPAT_APP_ID=2713000 \
             "$TOOL/proton" waitforexitandrun "$STEAM/steamapps/common/Test Game/Game.exe" --fake-arg
 
-          grep -q 'waitforexitandrun' "$HOME_FAKE/fake-proton-args.txt"
-          grep -q 'appid-2713000-launch.bat' "$HOME_FAKE/fake-proton-args.txt"
+          grep -q "waitforexitandrun" "$HOME_FAKE/fake-proton-args.txt"
+          grep -q "appid-2713000-launch.bat" "$HOME_FAKE/fake-proton-args.txt"
           BATCH="$XDG_STATE_HOME/wand/appid-2713000-launch.bat"
           test -s "$BATCH"
-          grep -q 'Wand.exe' "$BATCH"
-          grep -q 'Game.exe' "$BATCH"
-          grep -q -- '--fake-arg' "$BATCH"
+          grep -q "Wand.exe" "$BATCH"
+          grep -q "Game.exe" "$BATCH"
+          grep -q -- "--fake-arg" "$BATCH"
           echo "FAKE STEAM END-TO-END: PASS"
 
       - uses: actions/upload-artifact@v4
