@@ -1,0 +1,98 @@
+name: Wand Native RC4 crypt32 build
+
+on:
+  push:
+    branches:
+      - wand-native-rc4-build
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Wine build prerequisites
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential gcc-multilib g++-multilib mingw-w64 flex bison \
+            python3 git pkg-config libfreetype-dev libfreetype-dev:i386 \
+            libunwind-dev libx11-dev libx11-dev:i386
+
+      - name: Fetch exact GE-Proton11-7 Wine source
+        run: |
+          git clone --filter=blob:none https://github.com/ValveSoftware/wine.git wine
+          cd wine
+          git checkout 46b29104e3741fe23bf5e2547196a253aab88c89
+          git rev-parse HEAD
+
+      - name: Apply Wand CERT_SHA256_HASH_PROP_ID fix
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          hdr = Path("wine/include/wincrypt.h")
+          cert = Path("wine/dlls/crypt32/cert.c")
+          h = hdr.read_text()
+          c = cert.read_text()
+
+          if "#define CERT_SHA256_HASH_PROP_ID" not in h:
+              needle = "#define CERT_SIGN_HASH_CNG_ALG_PROP_ID             89\n"
+              if needle not in h:
+                  raise SystemExit("header insertion anchor missing")
+              h = h.replace(needle, needle + "#define CERT_SHA256_HASH_PROP_ID                    107\n", 1)
+
+          old = """#define IS_CERT_HASH_PROP_ID(x) \\\n ((x) == CERT_SHA1_HASH_PROP_ID || (x) == CERT_MD5_HASH_PROP_ID || \\\n  (x) == CERT_SIGNATURE_HASH_PROP_ID)"""
+          new = """#define IS_CERT_HASH_PROP_ID(x) \\\n ((x) == CERT_SHA1_HASH_PROP_ID || (x) == CERT_MD5_HASH_PROP_ID || \\\n  (x) == CERT_SHA256_HASH_PROP_ID || (x) == CERT_SIGNATURE_HASH_PROP_ID)"""
+          if "CERT_SHA256_HASH_PROP_ID || (x) == CERT_SIGNATURE_HASH_PROP_ID" not in h:
+              if old not in h:
+                  raise SystemExit("IS_CERT_HASH_PROP_ID anchor missing")
+              h = h.replace(old, new, 1)
+
+          getter = """        case CERT_SHA256_HASH_PROP_ID:\n            ret = CertContext_GetHashProp(cert, dwPropId, CALG_SHA_256,\n             cert->ctx.pbCertEncoded, cert->ctx.cbCertEncoded, pvData,\n             pcbData);\n            break;\n"""
+          if getter not in c:
+              sha1 = """        case CERT_SHA1_HASH_PROP_ID:\n            ret = CertContext_GetHashProp(cert, dwPropId, CALG_SHA1,\n             cert->ctx.pbCertEncoded, cert->ctx.cbCertEncoded, pvData,\n             pcbData);\n            break;\n"""
+              if sha1 not in c:
+                  raise SystemExit("SHA1 getter anchor missing")
+              c = c.replace(sha1, sha1 + getter, 1)
+
+          hdr.write_text(h)
+          cert.write_text(c)
+          PY
+          grep -n "CERT_SHA256_HASH_PROP_ID" wine/include/wincrypt.h wine/dlls/crypt32/cert.c
+
+      - name: Configure and build x86_64 crypt32
+        run: |
+          mkdir build64
+          cd build64
+          ../wine/configure --enable-win64 --without-x --without-wayland --without-gstreamer --without-ffmpeg --without-oss --without-pulse --without-alsa
+          make -j2 dlls/crypt32/crypt32.dll
+          test -s dlls/crypt32/crypt32.dll
+          file dlls/crypt32/crypt32.dll
+          sha256sum dlls/crypt32/crypt32.dll
+
+      - name: Configure and build i386 crypt32
+        run: |
+          mkdir build32
+          cd build32
+          ../wine/configure --with-wine64=../build64 --without-x --without-wayland --without-gstreamer --without-ffmpeg --without-oss --without-pulse --without-alsa
+          make -j2 dlls/crypt32/crypt32.dll
+          test -s dlls/crypt32/crypt32.dll
+          file dlls/crypt32/crypt32.dll
+          sha256sum dlls/crypt32/crypt32.dll
+
+      - name: Stage payload
+        run: |
+          mkdir -p payload/x86_64-windows payload/i386-windows
+          cp build64/dlls/crypt32/crypt32.dll payload/x86_64-windows/crypt32.dll
+          cp build32/dlls/crypt32/crypt32.dll payload/i386-windows/crypt32.dll
+          sha256sum payload/*/crypt32.dll | tee payload/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wand-crypt32-payload
+          path: payload/
+          if-no-files-found: error
