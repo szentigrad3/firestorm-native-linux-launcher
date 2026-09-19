@@ -67,6 +67,14 @@ jobs:
                   raise SystemExit("SHA1 getter anchor missing")
               c = c.replace(sha1, sha1 + getter, 1)
 
+          if "case CERT_SHA256_HASH_PROP_ID:" not in c[c.find("static BOOL CertContext_SetProperty"):]:
+              setter_anchor = "        case CERT_MD5_HASH_PROP_ID:\n"
+              setter_pos = c.find(setter_anchor, c.find("static BOOL CertContext_SetProperty"))
+              if setter_pos < 0:
+                  raise SystemExit("setter blob allowlist anchor missing")
+              setter_pos += len(setter_anchor)
+              c = c[:setter_pos] + "        case CERT_SHA256_HASH_PROP_ID:\n" + c[setter_pos:]
+
           hdr.write_text(h)
           cert.write_text(c)
           PY
@@ -77,26 +85,26 @@ jobs:
           mkdir build64
           cd build64
           ../wine/configure --enable-win64 --without-x --without-wayland --without-gstreamer --without-ffmpeg --without-oss --without-pulse --without-alsa
-          make -j2 dlls/crypt32/crypt32.dll
-          test -s dlls/crypt32/crypt32.dll
-          file dlls/crypt32/crypt32.dll
-          sha256sum dlls/crypt32/crypt32.dll
+          make -j2 dlls/crypt32/x86_64-windows/crypt32.dll
+          test -s dlls/crypt32/x86_64-windows/crypt32.dll
+          file dlls/crypt32/x86_64-windows/crypt32.dll
+          sha256sum dlls/crypt32/x86_64-windows/crypt32.dll
 
       - name: Configure and build i386 crypt32
         run: |
           mkdir build32
           cd build32
           ../wine/configure --with-wine64=../build64 --without-x --without-wayland --without-gstreamer --without-ffmpeg --without-oss --without-pulse --without-alsa
-          make -j2 dlls/crypt32/crypt32.dll
-          test -s dlls/crypt32/crypt32.dll
-          file dlls/crypt32/crypt32.dll
-          sha256sum dlls/crypt32/crypt32.dll
+          make -j2 dlls/crypt32/i386-windows/crypt32.dll
+          test -s dlls/crypt32/i386-windows/crypt32.dll
+          file dlls/crypt32/i386-windows/crypt32.dll
+          sha256sum dlls/crypt32/i386-windows/crypt32.dll
 
       - name: Stage payload
         run: |
           mkdir -p payload/x86_64-windows payload/i386-windows
-          cp build64/dlls/crypt32/crypt32.dll payload/x86_64-windows/crypt32.dll
-          cp build32/dlls/crypt32/crypt32.dll payload/i386-windows/crypt32.dll
+          cp build64/dlls/crypt32/x86_64-windows/crypt32.dll payload/x86_64-windows/crypt32.dll
+          cp build32/dlls/crypt32/i386-windows/crypt32.dll payload/i386-windows/crypt32.dll
           sha256sum payload/*/crypt32.dll | tee payload/SHA256SUMS
 
       - uses: actions/upload-artifact@v4
