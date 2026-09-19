@@ -1,0 +1,418 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+TOOL_ID="GE-Proton-Wand-SHA256"
+DISPLAY_NAME="GE Proton Wand SHA256"
+APPDIR="${WAND_APPDIR:-}"
+if [[ -z "$APPDIR" ]]; then
+  APPDIR="$(cd -- "$(dirname -- "$0")/../../.." && pwd -P)"
+fi
+RUNTIME="$APPDIR/usr/lib/wand-native"
+PAYLOAD="$RUNTIME/payload"
+WRAPPER="$RUNTIME/proton-wrapper"
+STATE="${XDG_STATE_HOME:-$HOME/.local/state}/wand"
+CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/wand-native"
+mkdir -p "$STATE" "$CACHE"
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+note() { echo "$*"; }
+
+steam_roots() {
+  {
+    printf '%s\n'       "/mnt/games/Steam"       "$HOME/.local/share/Steam"       "$HOME/.steam/root"       "$HOME/.steam/steam"       "$HOME/.var/app/com.valvesoftware.Steam/data/Steam"
+    local root vdf
+    for root in /mnt/games/Steam "$HOME/.local/share/Steam" "$HOME/.steam/root" "$HOME/.steam/steam"; do
+      for vdf in "$root/steamapps/libraryfolders.vdf" "$root/config/libraryfolders.vdf"; do
+        [[ -f "$vdf" ]] || continue
+        sed -nE 's/^[[:space:]]*"path"[[:space:]]+"([^"]+)".*/\1/p' "$vdf" | sed 's#\\\\#/#g'
+      done
+    done
+  } | while IFS= read -r p; do
+    [[ -d "$p" ]] || continue
+    readlink -f "$p" 2>/dev/null || printf '%s\n' "$p"
+  done | awk '!seen[$0]++'
+}
+
+game_root_for() {
+  local appid="$1" root
+  while IFS= read -r root; do
+    [[ -f "$root/steamapps/appmanifest_${appid}.acf" ]] && { printf '%s\n' "$root"; return 0; }
+  done < <(steam_roots)
+  return 1
+}
+
+main_steam_root() {
+  local root
+  while IFS= read -r root; do
+    [[ -f "$root/config/config.vdf" ]] && { printf '%s\n' "$root"; return 0; }
+  done < <(steam_roots)
+  return 1
+}
+
+find_base() {
+  local root p
+  while IFS= read -r root; do
+    p="$root/compatibilitytools.d/Proton-GE Latest"
+    [[ -x "$p/proton" ]] && { printf '%s\n' "$p"; return 0; }
+  done < <(steam_roots)
+
+  while IFS= read -r root; do
+    [[ -d "$root/compatibilitytools.d" ]] || continue
+    find "$root/compatibilitytools.d" -mindepth 1 -maxdepth 1 -type d \
+      \( -name 'GE-Proton11-*' -o -name 'GE-Proton*' -o -name 'Proton-GE*' \) \
+      ! -name "$TOOL_ID" -print 2>/dev/null
+  done < <(steam_roots) | sort -V | tail -1
+}
+
+download_ge() {
+  local steam_root="$1"
+  local compat="$steam_root/compatibilitytools.d"
+  local tag="GE-Proton11-7"
+  local tgz="$CACHE/GE-Proton11-7-x86_64.tar.gz"
+  local sums="$CACHE/GE-Proton11-7-x86_64.sha512sum"
+  command -v curl >/dev/null 2>&1 || die "curl is required to download Proton-GE."
+  command -v tar >/dev/null 2>&1 || die "tar is required to install Proton-GE."
+  mkdir -p "$compat"
+  note "No Proton-GE base was found. Downloading official GE-Proton11-7..."
+  curl -fL --retry 3 -o "$tgz" "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/$tag/GE-Proton11-7-x86_64.tar.gz"
+  curl -fL --retry 3 -o "$sums" "https://github.com/GloriousEggroll/proton-ge-custom/releases/download/$tag/GE-Proton11-7-x86_64.sha512sum"
+  (cd "$CACHE" && sha512sum -c "$(basename "$sums")")
+  tar -xzf "$tgz" -C "$compat"
+  find "$compat" -mindepth 1 -maxdepth 1 -type d -name 'GE-Proton11-7*' -print -quit
+}
+
+tool_for_base() {
+  local base="$1"
+  printf '%s/%s\n' "$(dirname "$base")" "$TOOL_ID"
+}
+
+find_tool() {
+  local root p
+  while IFS= read -r root; do
+    p="$root/compatibilitytools.d/$TOOL_ID"
+    [[ -x "$p/proton" ]] && { printf '%s\n' "$p"; return 0; }
+  done < <(steam_roots)
+  return 1
+}
+
+locate_wand() {
+  local compat="$1"
+  local found
+  found="$(find "$compat/pfx/drive_c/users" -type f -path '*/AppData/Local/Wand/app-*/Wand.exe' -print 2>/dev/null | sort -V | tail -1)"
+  if [[ -z "$found" ]]; then
+    found="$(find "$compat/pfx/drive_c/users" -type f \
+      \( -path '*/AppData/Local/WeMod/app-*/WeMod.exe' -o -path '*/AppData/Local/WeMod/app-*/Wand.exe' \) \
+      -print 2>/dev/null | sort -V | tail -1)"
+  fi
+  [[ -n "$found" ]] && printf '%s\n' "$found"
+}
+
+ensure_wand() {
+  local appid="$1" game_root="$2" tool="$3"
+  local compat="$game_root/steamapps/compatdata/$appid"
+  local wand
+  mkdir -p "$compat"
+  wand="$(locate_wand "$compat" || true)"
+  if [[ -n "$wand" ]]; then
+    note "Wand: installed"
+    note "  $wand"
+    return 0
+  fi
+
+  command -v curl >/dev/null 2>&1 || die "Wand is not installed and curl is unavailable."
+  local installer="$CACHE/Wand-Setup.exe"
+  note "Wand is not installed in this game's Proton prefix."
+  note "Downloading the official Wand installer..."
+  curl -fL --retry 3 -o "$installer" "https://wand.com/download"
+  [[ "$(head -c2 "$installer" 2>/dev/null || true)" == "MZ" ]] || die "Official Wand download did not return a Windows installer."
+
+  note "Installing Wand automatically into AppID $appid..."
+  set +e
+  STEAM_COMPAT_DATA_PATH="$compat" \
+  STEAM_COMPAT_CLIENT_INSTALL_PATH="$game_root" \
+  SteamAppId="$appid" SteamGameId="$appid" STEAM_COMPAT_APP_ID="$appid" \
+  WAND_STEAM_WRAP_DISABLE=1 \
+    "$tool/proton.wand-real" run "$installer" --silent
+  local rc=$?
+  set -e
+  (( rc == 0 )) || note "Installer returned $rc; waiting for the Squirrel install to finish..."
+
+  local i
+  for i in $(seq 1 60); do
+    wand="$(locate_wand "$compat" || true)"
+    [[ -n "$wand" ]] && break
+    sleep 1
+  done
+  [[ -n "$wand" ]] || die "Wand installation did not complete. Run Setup / Repair again to retry."
+  note "Wand installation complete."
+  note "  $wand"
+}
+
+mapping_name() {
+  local appid="$1" root cfg
+  root="$(main_steam_root || true)"
+  [[ -n "$root" ]] || return 1
+  cfg="$root/config/config.vdf"
+  python3 - "$cfg" "$appid" <<'PY'
+from pathlib import Path
+import re, sys
+p=Path(sys.argv[1]); appid=sys.argv[2]
+s=p.read_text(errors="replace")
+m=re.search(r'"CompatToolMapping"\s*\{', s)
+if not m: raise SystemExit(1)
+start=m.end(); depth=1; i=start; quote=False; esc=False
+while i<len(s) and depth:
+    ch=s[i]
+    if quote:
+        if esc: esc=False
+        elif ch=="\\": esc=True
+        elif ch=='"': quote=False
+    else:
+        if ch=='"': quote=True
+        elif ch=='{': depth+=1
+        elif ch=='}': depth-=1
+    i+=1
+body=s[start:i-1]
+a=re.search(r'"'+re.escape(appid)+r'"\s*\{([^{}]*)\}', body, re.S)
+if not a: raise SystemExit(1)
+n=re.search(r'"name"\s*"([^"]*)"', a.group(1))
+if not n: raise SystemExit(1)
+print(n.group(1))
+PY
+}
+
+set_mapping() {
+  local appid="$1"
+  local root cfg
+  root="$(main_steam_root || true)"
+  [[ -n "$root" ]] || die "Steam config directory was not found."
+  cfg="$root/config/config.vdf"
+  [[ -f "$cfg" ]] || die "Steam config.vdf was not found."
+
+  python3 - "$cfg" "$appid" "$TOOL_ID" <<'PY'
+from pathlib import Path
+import re, sys
+p=Path(sys.argv[1]); appid=sys.argv[2]; tool=sys.argv[3]
+s=p.read_text(errors="replace")
+
+def matching_brace(text, openpos):
+    depth=0; quote=False; esc=False
+    for i in range(openpos, len(text)):
+        ch=text[i]
+        if quote:
+            if esc: esc=False
+            elif ch=="\\": esc=True
+            elif ch=='"': quote=False
+        else:
+            if ch=='"': quote=True
+            elif ch=='{': depth+=1
+            elif ch=='}':
+                depth-=1
+                if depth==0: return i
+    raise RuntimeError("unbalanced VDF")
+
+m=re.search(r'"CompatToolMapping"\s*\{', s)
+if not m:
+    # Insert a new mapping block inside the main "Steam" object.
+    sm=re.search(r'"Steam"\s*\{', s)
+    if not sm: raise SystemExit("Steam section not found in config.vdf")
+    op=s.find("{", sm.start()); end=matching_brace(s, op)
+    block='\n\t\t\t"CompatToolMapping"\n\t\t\t{\n\t\t\t\t"'+appid+'"\n\t\t\t\t{\n\t\t\t\t\t"name"\t\t"'+tool+'"\n\t\t\t\t\t"config"\t\t""\n\t\t\t\t\t"priority"\t\t"250"\n\t\t\t\t}\n\t\t\t}\n'
+    s=s[:end]+block+s[end:]
+else:
+    op=s.find("{", m.start()); end=matching_brace(s, op)
+    body=s[op+1:end]
+    am=re.search(r'"'+re.escape(appid)+r'"\s*\{', body)
+    if am:
+        aop=body.find("{", am.start()); aend=matching_brace(body, aop)
+        block=body[aop+1:aend]
+        if re.search(r'"name"\s*"[^"]*"', block):
+            block=re.sub(r'"name"\s*"[^"]*"', '"name"\t\t"'+tool+'"', block, count=1)
+        else:
+            block='\n\t\t\t"name"\t\t"'+tool+'"\n'+block
+        body=body[:aop+1]+block+body[aend:]
+    else:
+        body+='\n\t\t"'+appid+'"\n\t\t{\n\t\t\t"name"\t\t"'+tool+'"\n\t\t\t"config"\t\t""\n\t\t\t"priority"\t\t"250"\n\t\t}\n'
+    s=s[:op+1]+body+s[end:]
+tmp=p.with_suffix(".vdf.wandtmp")
+tmp.write_text(s)
+tmp.replace(p)
+PY
+}
+
+steam_running() {
+  pgrep -x steam >/dev/null 2>&1 || pgrep -f '/steamwebhelper' >/dev/null 2>&1
+}
+
+restart_steam_once_if_needed() {
+  local appid="$1"
+  local current
+  current="$(mapping_name "$appid" 2>/dev/null || true)"
+  [[ "$current" == "$TOOL_ID" ]] && { note "Steam game mapping: already configured"; return 0; }
+
+  local was_running=0
+  if steam_running; then
+    was_running=1
+    note "Steam needs one one-time restart to register Wand compatibility for this game."
+    note "Closing Steam for setup only..."
+    steam -shutdown >/dev/null 2>&1 || true
+    for _ in $(seq 1 30); do
+      steam_running || break
+      sleep 1
+    done
+  fi
+
+  set_mapping "$appid"
+  note "Steam game mapping: $TOOL_ID"
+
+  if (( was_running )); then
+    note "Restarting Steam after setup..."
+    nohup steam -silent >/dev/null 2>&1 &
+  fi
+}
+
+install_tool() {
+  local appid="$1"
+  [[ "$appid" =~ ^[0-9]+$ ]] || die "Invalid Steam AppID: $appid"
+  [[ -f "$PAYLOAD/x86_64-windows/crypt32.dll" ]] || die "AppImage is missing x86_64 crypt32 payload."
+  [[ -f "$PAYLOAD/i386-windows/crypt32.dll" ]] || die "AppImage is missing i386 crypt32 payload."
+  [[ -x "$WRAPPER" ]] || die "AppImage is missing Proton wrapper."
+
+  local game_root base steam_root tool d64 d32
+  game_root="$(game_root_for "$appid" || true)"
+  [[ -n "$game_root" ]] || die "Steam AppID $appid is not installed."
+
+  base="$(find_base || true)"
+  if [[ -z "$base" ]]; then
+    steam_root="$(main_steam_root || true)"
+    [[ -n "$steam_root" ]] || die "Steam installation was not found."
+    base="$(download_ge "$steam_root")"
+  fi
+  [[ -x "$base/proton" ]] || die "Usable Proton-GE base was not found."
+  tool="$(tool_for_base "$base")"
+
+  note "Base Proton: $base"
+  note "Wand tool:   $tool"
+  note "Creating a clean isolated Wand Proton tool..."
+  rm -rf -- "$tool"
+  mkdir -p "$tool"
+  cp -a "$base/." "$tool/"
+  mv "$tool/proton" "$tool/proton.wand-real"
+
+  d64="$(find "$tool/files" -type f -path '*/x86_64-windows/crypt32.dll' -print -quit)"
+  d32="$(find "$tool/files" -type f -path '*/i386-windows/crypt32.dll' -print -quit)"
+  [[ -n "$d64" && -n "$d32" ]] || die "Proton-GE crypt32 locations were not found."
+  chmod u+w "$d64" "$d32"
+  cp -f "$PAYLOAD/x86_64-windows/crypt32.dll" "$d64"
+  cp -f "$PAYLOAD/i386-windows/crypt32.dll" "$d32"
+
+  cp "$WRAPPER" "$tool/proton"
+  chmod 0755 "$tool/proton" "$tool/proton.wand-real"
+
+  cat > "$tool/compatibilitytool.vdf" <<EOF
+"compatibilitytools"
+{
+  "compat_tools"
+  {
+    "$TOOL_ID"
+    {
+      "install_path" "."
+      "display_name" "$DISPLAY_NAME"
+      "from_oslist" "windows"
+      "to_oslist" "linux"
+    }
+  }
+}
+EOF
+  cat > "$tool/WAND-NATIVE.txt" <<EOF
+Wand Native compatibility tool
+Base: $base
+Created: $(date -Is)
+Architecture: normal Proton-GE + patched Wine crypt32 + one-session launch wrapper
+EOF
+
+  restart_steam_once_if_needed "$appid"
+  ensure_wand "$appid" "$game_root" "$tool"
+  note
+  note "SETUP COMPLETE"
+  note "Normal PLAY WITH WAND will not stop or restart Steam."
+}
+
+verify_tool() {
+  local appid="$1"
+  local tool game_root d64 d32 h64 h32 e64 e32
+  tool="$(find_tool || true)"
+  [[ -n "$tool" ]] || die "Wand compatibility tool is not installed."
+  [[ -x "$tool/proton" && -x "$tool/proton.wand-real" ]] || die "Wand Proton wrapper is incomplete."
+  grep -q 'WAND_NATIVE_BATCH_ACTIVE' "$tool/proton" || die "Installed Proton wrapper is not the RC4 one-session wrapper."
+  d64="$(find "$tool/files" -type f -path '*/x86_64-windows/crypt32.dll' -print -quit)"
+  d32="$(find "$tool/files" -type f -path '*/i386-windows/crypt32.dll' -print -quit)"
+  [[ -f "$d64" && -f "$d32" ]] || die "Patched crypt32 DLLs are missing."
+  e64="$(sha256sum "$PAYLOAD/x86_64-windows/crypt32.dll" | awk '{print $1}')"
+  e32="$(sha256sum "$PAYLOAD/i386-windows/crypt32.dll" | awk '{print $1}')"
+  h64="$(sha256sum "$d64" | awk '{print $1}')"
+  h32="$(sha256sum "$d32" | awk '{print $1}')"
+  [[ "$h64" == "$e64" ]] || die "x86_64 crypt32 verification failed."
+  [[ "$h32" == "$e32" ]] || die "i386 crypt32 verification failed."
+  note "Wand compatibility tool: healthy"
+  note "x86_64 crypt32: $h64"
+  note "i386 crypt32:   $h32"
+  if [[ -n "$appid" ]]; then
+    game_root="$(game_root_for "$appid" || true)"
+    [[ -n "$game_root" ]] || die "Selected game is not installed."
+    local map
+    map="$(mapping_name "$appid" 2>/dev/null || true)"
+    [[ "$map" == "$TOOL_ID" ]] || die "Steam mapping is '$map' instead of '$TOOL_ID'. Run Setup / Repair."
+    local wand
+    wand="$(locate_wand "$game_root/steamapps/compatdata/$appid" || true)"
+    [[ -n "$wand" ]] || die "Wand is not installed in the selected game's prefix. Run Setup / Repair."
+    note "Steam mapping: $map"
+    note "Wand: $wand"
+  fi
+  note "VERIFY COMPLETE"
+}
+
+play_with_wand() {
+  local appid="$1"
+  [[ "$appid" =~ ^[0-9]+$ ]] || die "Invalid Steam AppID."
+  verify_tool "$appid" >/dev/null
+  steam_running || die "Steam is not running. Start Steam, then press PLAY WITH WAND again."
+  note "Launching AppID $appid through Steam."
+  note "Steam will remain running; the Proton wrapper starts Wand and the game in one session."
+  nohup steam -applaunch "$appid" >/dev/null 2>&1 &
+  note "PLAY DISPATCHED"
+}
+
+trainer_health() {
+  local appid="$1"
+  local root logdir wrapperlog
+  root="$(game_root_for "$appid" || true)"
+  [[ -n "$root" ]] || die "Selected game is not installed."
+  wrapperlog="$STATE/steam-wrapper.log"
+  [[ -f "$wrapperlog" ]] && { note "Latest wrapper activity:"; tail -8 "$wrapperlog"; note; }
+  logdir="$root/steamapps/compatdata/$appid/pfx/drive_c/users"
+  local latest
+  latest="$(find "$logdir" -type f -path '*/AppData/Local/Wand/logs/*' -print 2>/dev/null | sort | tail -1)"
+  [[ -n "$latest" ]] || { note "No Wand logs found yet. Launch the game with Wand first."; return 0; }
+  note "Latest Wand log: $latest"
+  if grep -Eqi 'plugin_init returned 0|TrainerLib.*registered|trainer_run_mod_json' "$latest"; then
+    note "Trainer runtime activity detected."
+  else
+    note "Trainer runtime activity not detected in the newest log yet."
+  fi
+  if grep -Eqi 'Plugin signature verification failed|reason=verification_error' "$latest"; then
+    note "WARNING: plugin signature verification failure detected."
+    return 2
+  fi
+}
+
+case "${1:-}" in
+  setup) shift; install_tool "${1:-}" ;;
+  verify) shift; verify_tool "${1:-}" ;;
+  play) shift; play_with_wand "${1:-}" ;;
+  health) shift; trainer_health "${1:-}" ;;
+  *)
+    echo "Usage: wand-native-helper {setup|verify|play|health} APPID" >&2
+    exit 2
+    ;;
+esac
