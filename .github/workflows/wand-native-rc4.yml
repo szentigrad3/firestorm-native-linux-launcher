@@ -216,6 +216,110 @@ jobs:
             squashfs-root/usr/bin/wand-native || rc=$?
           test "${rc:-124}" = "124"
 
+      - name: End-to-end fake Steam validation
+        run: |
+          set -euxo pipefail
+          FAKE="$RUNNER_TEMP/wand-fake"
+          HOME_FAKE="$FAKE/home"
+          STEAM="$HOME_FAKE/.local/share/Steam"
+          BASE="$STEAM/compatibilitytools.d/Proton-GE Latest"
+          PREFIX="$STEAM/steamapps/compatdata/2713000/pfx"
+          rm -rf "$FAKE"
+          mkdir -p \
+            "$BASE/files/lib/wine/x86_64-windows" \
+            "$BASE/files/lib/wine/i386-windows" \
+            "$STEAM/config" \
+            "$STEAM/steamapps" \
+            "$PREFIX/drive_c/users/test/AppData/Local/Wand/app-12.55.0"
+
+          cat > "$BASE/proton" <<'EOF'
+          #!/usr/bin/env bash
+          printf '%q ' "$@" >> "${HOME}/fake-proton-args.txt"
+          printf '\n' >> "${HOME}/fake-proton-args.txt"
+          exit 0
+          EOF
+          chmod +x "$BASE/proton"
+          printf original64 > "$BASE/files/lib/wine/x86_64-windows/crypt32.dll"
+          printf original32 > "$BASE/files/lib/wine/i386-windows/crypt32.dll"
+
+          cat > "$STEAM/steamapps/appmanifest_2713000.acf" <<'EOF'
+          "AppState"
+          {
+            "appid" "2713000"
+            "name" "Resonance: A Plague Tale Legacy"
+            "installdir" "Resonance A Plague Tale Legacy"
+          }
+          EOF
+
+          cat > "$STEAM/config/config.vdf" <<'EOF'
+          "InstallConfigStore"
+          {
+            "Software"
+            {
+              "Valve"
+              {
+                "Steam"
+                {
+                  "CompatToolMapping"
+                  {
+                    "2713000"
+                    {
+                      "name" "GE-Proton-Wand-SHA256"
+                      "config" ""
+                      "priority" "250"
+                    }
+                  }
+                }
+              }
+            }
+          }
+          EOF
+
+          : > "$PREFIX/drive_c/users/test/AppData/Local/Wand/app-12.55.0/Wand.exe"
+
+          export HOME="$HOME_FAKE"
+          export XDG_STATE_HOME="$HOME_FAKE/.local/state"
+          export XDG_CACHE_HOME="$HOME_FAKE/.cache"
+          export WAND_APPDIR="$GITHUB_WORKSPACE/squashfs-root"
+          HELPER="$WAND_APPDIR/usr/lib/wand-native/wand-native-helper"
+
+          "$HELPER" games | tee "$FAKE/games.txt"
+          grep -q 
+          path: |
+            dist/Wand-Native-0.1.41-native-gui-rc4-x86_64.AppImage
+            dist/Wand-Native-0.1.41-native-gui-rc4-x86_64.AppImage.sha256
+          if-no-files-found: error
+2713000\tResonance: A Plague Tale Legacy' "$FAKE/games.txt"
+
+          "$HELPER" setup 2713000 | tee "$FAKE/setup.txt"
+          grep -q 'SETUP COMPLETE' "$FAKE/setup.txt"
+          "$HELPER" verify 2713000 | tee "$FAKE/verify.txt"
+          grep -q 'VERIFY COMPLETE' "$FAKE/verify.txt"
+
+          TOOL="$STEAM/compatibilitytools.d/GE-Proton-Wand-SHA256"
+          test -x "$TOOL/proton"
+          test -x "$TOOL/proton.wand-real"
+          grep -q WAND_NATIVE_BATCH_ACTIVE "$TOOL/proton"
+          cmp "$WAND_APPDIR/usr/lib/wand-native/payload/x86_64-windows/crypt32.dll" \
+              "$TOOL/files/lib/wine/x86_64-windows/crypt32.dll"
+          cmp "$WAND_APPDIR/usr/lib/wand-native/payload/i386-windows/crypt32.dll" \
+              "$TOOL/files/lib/wine/i386-windows/crypt32.dll"
+
+          mkdir -p "$STEAM/steamapps/common/Test Game"
+          : > "$STEAM/steamapps/common/Test Game/Game.exe"
+          STEAM_COMPAT_DATA_PATH="$STEAM/steamapps/compatdata/2713000" \
+          SteamAppId=2713000 SteamGameId=2713000 STEAM_COMPAT_APP_ID=2713000 \
+            "$TOOL/proton" waitforexitandrun "$STEAM/steamapps/common/Test Game/Game.exe" --fake-arg
+
+          grep -q 'waitforexitandrun' "$HOME_FAKE/fake-proton-args.txt"
+          grep -q 'appid-2713000-launch.bat' "$HOME_FAKE/fake-proton-args.txt"
+          BATCH="$XDG_STATE_HOME/wand/appid-2713000-launch.bat"
+          test -s "$BATCH"
+          grep -q 'Wand.exe' "$BATCH"
+          grep -q 'Game.exe' "$BATCH"
+          grep -q -- '--fake-arg' "$BATCH"
+          echo "FAKE STEAM END-TO-END: PASS"
+
       - uses: actions/upload-artifact@v4
         with:
           name: Wand-Native-0.1.41-native-gui-rc4-x86_64
