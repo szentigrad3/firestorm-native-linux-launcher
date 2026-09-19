@@ -28,6 +28,8 @@ jobs:
           git clone --filter=blob:none https://github.com/ValveSoftware/wine.git wine
           cd wine
           git checkout 46b29104e3741fe23bf5e2547196a253aab88c89
+          autoreconf -fiv
+          test -x configure
           git rev-parse HEAD
 
       - name: Apply Wand CERT_SHA256_HASH_PROP_ID fix
